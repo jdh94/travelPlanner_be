@@ -1,5 +1,6 @@
 import hmac
 import hashlib
+import requests as http_client  # Flask メールサービスへの HTTP リクエストに使う
 from django.conf import settings
 from django.contrib.auth import get_user_model
 from django.db.models import Q
@@ -16,6 +17,19 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 
 
+# Flask メールサービスの URL。settings.py の EMAIL_SERVICE_URL で変更可能。
+EMAIL_SERVICE_URL = getattr(settings, 'EMAIL_SERVICE_URL', 'http://localhost:5000')
+
+
+# メール認証完了後に発行する HMAC トークン。
+# email を含む文字列を SECRET_KEY でハッシュ化することで、
+# ① このサーバーだけが生成できる ② DB に何も保存しなくていい の2点を保証する。
+def _generate_email_verification_token(email: str) -> str:
+    key = settings.SECRET_KEY.encode()
+    msg = f"email_verified:{email}".encode()
+    return hmac.new(key, msg, hashlib.sha256).hexdigest()[:40]
+
+
 # HMAC（Hash-based Message Authentication Code）でPINトークンを生成する関数。
 # PIN検証後、クライアントに渡す「合言葉」として機能する。
 # SECRET_KEY + hash_url + user_id を組み合わせることで、
@@ -27,18 +41,80 @@ def _generate_pin_token(hash_url: str, user_id) -> str:
     # hmac.new(...).hexdigest() → 64文字の16進文字列。先頭40文字を使う。
     return hmac.new(key, msg, hashlib.sha256).hexdigest()[:40]
 
-from .models import Trip, TripMember, Spot, Comment
+from decimal import Decimal
+from .models import Trip, TripMember, Spot, Comment, Expense
 from .serializers import (
     UserSerializer, RegisterSerializer,
     TripSerializer, TripCreateSerializer, PinVerifySerializer,
     SpotSerializer, SpotListSerializer, CommentSerializer,
-    TripMemberSerializer,
+    TripMemberSerializer, ExpenseSerializer,
 )
 
 User = get_user_model()
 
 
 # --- Auth ---
+
+# --- メール認証 ---
+
+class SendVerificationView(APIView):
+    """
+    STEP 1: メールアドレスに6桁の認証コードを送信する。
+    Flask メールサービス（POST /sendMail/join）に中継するだけ。
+    Redis に email → コード を1時間保存するのは Flask 側で行う。
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        if not email:
+            return Response({'detail': 'メールアドレスを入力してください。'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Flask サービスに POST して認証コードメールを送ってもらう。
+            resp = http_client.post(
+                f'{EMAIL_SERVICE_URL}/sendMail/join',
+                json={'email': email},
+                timeout=10,
+            )
+            if resp.text.strip() == 'success':
+                return Response({'detail': '認証コードを送りました。メールをご確認ください。'})
+            return Response({'detail': 'メール送信に失敗しました。'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            return Response({'detail': 'メールサービスに接続できません。'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class VerifyEmailCodeView(APIView):
+    """
+    STEP 2: ユーザーが入力したコードを Flask に確認させる。
+    成功した場合、HMAC で生成した verification_token を返す。
+    このトークンを STEP 3（登録）で使う。
+    """
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        code = request.data.get('code', '').strip()
+        if not email or not code:
+            return Response({'detail': 'パラメータが不足しています。'}, status=status.HTTP_400_BAD_REQUEST)
+        try:
+            # Flask の /chkValid に email と入力されたコードを送って検証してもらう。
+            resp = http_client.post(
+                f'{EMAIL_SERVICE_URL}/chkValid',
+                json={'email': email, 'authNumber': code},
+                timeout=10,
+            )
+            result = resp.text.strip()
+            if result == 'success':
+                # 検証成功 → HMAC トークンを発行して返す。登録時の証明書として使う。
+                token = _generate_email_verification_token(email)
+                return Response({'verification_token': token})
+            elif result == 'expired':
+                return Response({'detail': '認証コードの有効期限が切れました。もう一度送信してください。'}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'detail': '認証コードが正しくありません。'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception:
+            return Response({'detail': 'メールサービスに接続できません。'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
 
 # generics.CreateAPIView: POST リクエストだけを受け付ける汎用ビュー。
 # create() メソッドでシリアライザのバリデーション→保存を自動処理する。
@@ -48,8 +124,21 @@ class RegisterView(generics.CreateAPIView):
     # AllowAny: 未ログインユーザーも呼べる（登録は誰でもできる必要があるため）。
     permission_classes = [permissions.AllowAny]
 
-    # create() をオーバーライドして、登録後にJWTトークンをレスポンスに含める。
+    # create() をオーバーライドして、メール認証トークンの確認と JWT 発行を行う。
     def create(self, request, *args, **kwargs):
+        # verification_token: VerifyEmailCodeView が発行したHMACトークン。
+        # これがないと登録できない（メール認証の強制）。
+        verification_token = request.data.get('verification_token', '').strip()
+        email = request.data.get('email', '').strip()
+
+        if not verification_token or not email:
+            return Response({'detail': 'メール認証が必要です。'}, status=status.HTTP_400_BAD_REQUEST)
+
+        # サーバー側で同じ HMAC を再生成して比較する（DBに保存不要）。
+        expected = _generate_email_verification_token(email)
+        if not hmac.compare_digest(verification_token, expected):
+            return Response({'detail': 'メール認証が無効です。もう一度認証してください。'}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = self.get_serializer(data=request.data)
         # is_valid(raise_exception=True): バリデーション失敗時に自動で 400 エラーを返す。
         serializer.is_valid(raise_exception=True)
@@ -337,3 +426,185 @@ class CommentListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         author = self.request.user if self.request.user.is_authenticated else None
         serializer.save(spot_id=self.kwargs['spot_pk'], author=author)
+
+
+# --- Expenses（費用管理） ---
+
+class ExpenseListCreateView(generics.ListCreateAPIView):
+    """
+    GET  /trips/<hash_url>/expenses/  → その旅行の費用一覧を返す
+    POST /trips/<hash_url>/expenses/  → 新しい費用を登録する
+
+    Django の generics.ListCreateAPIView を使うことで、
+    GETとPOSTの処理を自動でルーティングしてくれる。
+    """
+    serializer_class = ExpenseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get_queryset(self):
+        # URLの hash_url から該当する旅行の費用だけを取得する。
+        qs = Expense.objects.filter(
+            trip__hash_url=self.kwargs['hash_url']
+        ).prefetch_related('participants')
+        # ?spot_id=<uuid> が指定された場合はそのスポットの費用だけに絞る。
+        spot_id = self.request.query_params.get('spot_id')
+        if spot_id:
+            qs = qs.filter(spot_id=spot_id)
+        return qs
+
+    def create(self, request, *args, **kwargs):
+        try:
+            trip = Trip.objects.get(hash_url=self.kwargs['hash_url'])
+        except Trip.DoesNotExist:
+            return Response({'detail': '旅行が見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
+
+        participant_ids = request.data.get('participant_ids', [])
+
+        # spot_id が送られてきた場合、そのスポットが同じ旅行のものか検証する。
+        spot_id = request.data.get('spot')
+        spot = None
+        if spot_id:
+            try:
+                spot = Spot.objects.get(id=spot_id, trip=trip)
+            except Spot.DoesNotExist:
+                return Response({'detail': 'スポットが見つかりません。'}, status=status.HTTP_400_BAD_REQUEST)
+
+        serializer = ExpenseSerializer(
+            data=request.data,
+            context={'participant_ids': participant_ids, 'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save(trip=trip, spot=spot)
+        return Response(serializer.data, status=status.HTTP_201_CREATED)
+
+
+class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
+    """
+    GET    /expenses/<uuid:pk>/  → 費用の詳細を返す
+    PATCH  /expenses/<uuid:pk>/  → 費用を更新する
+    DELETE /expenses/<uuid:pk>/  → 費用を削除する
+    """
+    serializer_class = ExpenseSerializer
+    permission_classes = [permissions.IsAuthenticated]
+    queryset = Expense.objects.prefetch_related('participants').all()
+
+    def update(self, request, *args, **kwargs):
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+        participant_ids = request.data.get('participant_ids', None)
+        serializer = ExpenseSerializer(
+            instance,
+            data=request.data,
+            partial=partial,
+            context={'participant_ids': participant_ids, 'request': request}
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        return Response(serializer.data)
+
+
+class SettlementView(APIView):
+    """
+    GET /trips/<hash_url>/settlement/
+
+    各メンバーの収支を計算して「誰が誰にいくら払うか」のリストを返す。
+
+    アルゴリズム:
+    1. 各費用について、参加者が支払者に「割り勘額（amount / 参加人数）」を負う。
+    2. 全費用を集計して、メンバーごとの純収支（balance）を計算する。
+       balance > 0: 受け取るべき金額がある（多く払った人）
+       balance < 0: 支払うべき金額がある（少なく払った人）
+    3. Greedyアルゴリズムでbalanceをゼロに近づけながら「誰→誰へいくら」を決める。
+    """
+    permission_classes = [permissions.IsAuthenticated]
+
+    def get(self, request, hash_url):
+        try:
+            trip = Trip.objects.get(hash_url=hash_url)
+        except Trip.DoesNotExist:
+            return Response({'detail': '旅行が見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
+
+        # その旅行の全費用と参加者を一括取得する。
+        expenses = Expense.objects.filter(trip=trip).prefetch_related('participants', 'payer__user')
+
+        # --- STEP 1: メンバーごとの純収支を計算する ---
+        # balance[member_id] = 受け取るべき金額（正）または払うべき金額（負）
+        balance: dict[int, Decimal] = {}
+        member_names: dict[int, str] = {}
+
+        for expense in expenses:
+            if not expense.payer:
+                continue
+            participants = list(expense.participants.all())
+            if not participants:
+                continue
+
+            # 割り勘額（小数点以下2桁で計算）。
+            each_share = expense.amount / Decimal(len(participants))
+
+            payer_id = expense.payer.id
+            payer_name = expense.payer.user.username if expense.payer.user else '不明'
+            member_names[payer_id] = payer_name
+
+            # 支払者の収支に「立替えた合計額」を加算する。
+            balance[payer_id] = balance.get(payer_id, Decimal('0')) + expense.amount
+
+            # 参加者全員の収支から「割り勘額」を引く（負債）。
+            for participant in participants:
+                pid = participant.id
+                pname = participant.user.username if participant.user else '不明'
+                member_names[pid] = pname
+                balance[pid] = balance.get(pid, Decimal('0')) - each_share
+
+        # --- STEP 2: 精算リストを作る（Greedy アルゴリズム） ---
+        # balance が正の人（受け取る側）と負の人（払う側）をリストアップする。
+        creditors = sorted(
+            [(mid, b) for mid, b in balance.items() if b > Decimal('0.01')],
+            key=lambda x: -x[1]
+        )
+        debtors = sorted(
+            [(mid, -b) for mid, b in balance.items() if b < Decimal('-0.01')],
+            key=lambda x: -x[1]
+        )
+
+        settlements = []
+        i, j = 0, 0
+        while i < len(creditors) and j < len(debtors):
+            cred_id, cred_amount = creditors[i]
+            debt_id, debt_amount = debtors[j]
+
+            # 払う額は「負債額」と「受取額」の小さい方。
+            transfer = min(cred_amount, debt_amount)
+            settlements.append({
+                'from_member_id': debt_id,
+                'from_member_name': member_names.get(debt_id, '不明'),
+                'to_member_id': cred_id,
+                'to_member_name': member_names.get(cred_id, '不明'),
+                'amount': round(float(transfer), 0),
+                'currency': trip.currency,
+            })
+
+            # 残高を更新する。
+            creditors[i] = (cred_id, cred_amount - transfer)
+            debtors[j] = (debt_id, debt_amount - transfer)
+            if creditors[i][1] <= Decimal('0.01'):
+                i += 1
+            if debtors[j][1] <= Decimal('0.01'):
+                j += 1
+
+        # --- STEP 3: メンバーごとの収支サマリも返す ---
+        balance_summary = [
+            {
+                'member_id': mid,
+                'member_name': member_names.get(mid, '不明'),
+                'balance': round(float(b), 0),
+                'currency': trip.currency,
+            }
+            for mid, b in sorted(balance.items(), key=lambda x: -x[1])
+        ]
+
+        return Response({
+            'settlements': settlements,
+            'balance_summary': balance_summary,
+            'currency': trip.currency,
+        })

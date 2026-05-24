@@ -165,6 +165,44 @@ class Image(models.Model):
         db_table = 'images'
 
 
+class Expense(models.Model):
+    # 通貨の選択肢。Trip.CURRENCY_CHOICES と同じ値を使う。
+    CURRENCY_CHOICES = [
+        ('JPY', '円'),
+        ('KRW', 'ウォン'),
+        ('USD', 'ドル'),
+    ]
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    # CASCADE: Trip が削除されたら費用も全て削除する。
+    trip = models.ForeignKey(Trip, on_delete=models.CASCADE, related_name='expenses')
+    # SET_NULL: スポットが削除されても費用レコードは残す（旅行全体の費用として扱う）。
+    # null=True, blank=True → スポットに紐づかない旅行全体の費用も登録できる。
+    spot = models.ForeignKey(
+        Spot, on_delete=models.SET_NULL, null=True, blank=True, related_name='expenses'
+    )
+    # SET_NULL: メンバーが削除されても費用レコードは残す（payer が NULL になる）。
+    payer = models.ForeignKey(
+        TripMember, on_delete=models.SET_NULL, null=True, blank=True, related_name='paid_expenses'
+    )
+    name = models.CharField(max_length=200)
+    # max_digits=12, decimal_places=2 → 最大9,999,999,999.99まで対応。
+    amount = models.DecimalField(max_digits=12, decimal_places=2)
+    currency = models.CharField(max_length=3, choices=CURRENCY_CHOICES, default='JPY')
+    date = models.DateField(null=True, blank=True)
+    memo = models.TextField(blank=True, max_length=500)
+    # ManyToManyField: 費用を割り勘する参加者リスト（中間テーブル expense_participants が自動生成）。
+    # through='ExpenseParticipant' を使わず、シンプルな M2M にする。
+    participants = models.ManyToManyField(
+        TripMember, related_name='participating_expenses', blank=True
+    )
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        db_table = 'expenses'
+        ordering = ['date', 'created_at']
+
+
 class NotificationLog(models.Model):
     STATUS_CHOICES = [
         ('SENT', '送信済'),

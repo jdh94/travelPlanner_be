@@ -11,6 +11,11 @@ from . import views
 urlpatterns = [
     # --- 認証 ---
     # .as_view(): クラスベースビューを Django が扱える関数に変換する（必須）。
+    # メール認証 STEP1: 認証コードを送信する
+    path('auth/send-verification/', views.SendVerificationView.as_view(), name='send-verification'),
+    # メール認証 STEP2: 入力されたコードを検証し verification_token を返す
+    path('auth/verify-email/', views.VerifyEmailCodeView.as_view(), name='verify-email'),
+    # 会員登録 STEP3: verification_token 付きで登録する
     path('auth/register/', views.RegisterView.as_view(), name='register'),
     path('auth/login/', TokenObtainPairView.as_view(), name='login'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
@@ -40,4 +45,12 @@ urlpatterns = [
     # --- コメント ---
     # spot_pk という名前でビューに渡す（views.py の self.kwargs['spot_pk'] で参照）。
     path('spots/<uuid:spot_pk>/comments/', views.CommentListCreateView.as_view(), name='comment-list'),
+
+    # --- 費用・精算 ---
+    # GET/POST /trips/<hash_url>/expenses/ → 費用一覧取得・新規登録
+    path('trips/<str:hash_url>/expenses/', views.ExpenseListCreateView.as_view(), name='expense-list'),
+    # GET/PATCH/DELETE /expenses/<uuid:pk>/ → 費用詳細・更新・削除
+    path('expenses/<uuid:pk>/', views.ExpenseDetailView.as_view(), name='expense-detail'),
+    # GET /trips/<hash_url>/settlement/ → 精算計算結果を返す
+    path('trips/<str:hash_url>/settlement/', views.SettlementView.as_view(), name='settlement'),
 ]

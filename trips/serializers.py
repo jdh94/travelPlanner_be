@@ -4,7 +4,7 @@
 # ② DBのオブジェクトをJSONに変換してレスポンスとして返す（シリアライズ）
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
-from .models import Trip, TripMember, Spot, Comment, Image
+from .models import Trip, TripMember, Spot, Comment, Image, Expense
 
 # get_user_model(): settings.AUTH_USER_MODEL で指定したモデルを取得する。
 # User を直接 import するより、この方法が推奨される（カスタムモデルに対応）。
@@ -155,3 +155,50 @@ class TripCreateSerializer(serializers.ModelSerializer):
 # ModelSerializer ではなく Serializer を直接継承する。
 class PinVerifySerializer(serializers.Serializer):
     pin = serializers.CharField(max_length=4, min_length=4)
+
+
+class ExpenseSerializer(serializers.ModelSerializer):
+    # シリアライザメソッドフィールドで、支払者名・スポット名・参加者名リストを追加する。
+    payer_name = serializers.SerializerMethodField()
+    spot_name = serializers.SerializerMethodField()
+    # participant_ids: 参加者の TripMember.id リスト（読み書き両用）。
+    participant_ids = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Expense
+        fields = [
+            'id', 'trip', 'spot', 'spot_name', 'payer', 'payer_name', 'name',
+            'amount', 'currency', 'date', 'memo',
+            'participant_ids', 'created_at',
+        ]
+        read_only_fields = ['id', 'trip', 'created_at']
+
+    def get_payer_name(self, obj):
+        if obj.payer and obj.payer.user:
+            return obj.payer.user.username
+        return '不明'
+
+    def get_spot_name(self, obj):
+        # スポットに紐づいていない場合は None を返す（旅行全体の費用）。
+        return obj.spot.name if obj.spot else None
+
+    def get_participant_ids(self, obj):
+        return list(obj.participants.values_list('id', flat=True))
+
+    def create(self, validated_data):
+        participant_ids = self.context.get('participant_ids', [])
+        expense = Expense.objects.create(**validated_data)
+        if participant_ids:
+            members = TripMember.objects.filter(id__in=participant_ids, trip=validated_data['trip'])
+            expense.participants.set(members)
+        return expense
+
+    def update(self, instance, validated_data):
+        participant_ids = self.context.get('participant_ids', [])
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+        if participant_ids is not None:
+            members = TripMember.objects.filter(id__in=participant_ids, trip=instance.trip)
+            instance.participants.set(members)
+        return instance

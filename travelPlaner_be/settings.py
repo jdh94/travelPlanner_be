@@ -80,9 +80,9 @@ DATABASES = {
         'ENGINE': 'django.db.backends.mysql',
         'NAME': config('DB_NAME', default='travelPlaner'),
         'USER': config('DB_USER', default='root'),
-        'PASSWORD': config('DB_PASSWORD', default=''),
-        'HOST': config('DB_HOST', default='localhost'),
-        'PORT': config('DB_PORT', default='3306'),
+        'PASSWORD': config('DB_PASSWORD', default='fldeldehdgn1!'),
+        'HOST': config('DB_HOST', default='homejdh.iptime.org'),
+        'PORT': config('DB_PORT', default='9002'),
         'OPTIONS': {
             # utf8mb4: 絵文字を含む全てのUnicode文字を保存できる文字コード。
             # utf8 は MySQL では3バイト文字までしか対応していないため utf8mb4 を使う。
@@ -158,6 +158,10 @@ CORS_ALLOW_HEADERS = [
 ]
 
 GOOGLE_MAPS_API_KEY = config('GOOGLE_MAPS_API_KEY', default='')
+
+# Flask メールサービスの URL。
+# pythonEmailService/app.py が localhost:5000 で起動していることを前提とする。
+EMAIL_SERVICE_URL = config('EMAIL_SERVICE_URL', default='http://localhost:5001')
 
 # AUTH_USER_MODEL: Django が認証に使うユーザーモデルを独自クラスに変更する。
 # AbstractUser を継承した trips.User を使うことで email ログインが可能になる。
