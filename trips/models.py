@@ -130,6 +130,8 @@ class Spot(models.Model):
     memo = models.TextField(blank=True, max_length=500)
     order_index = models.IntegerField(default=0)
     estimated_cost = models.DecimalField(max_digits=12, decimal_places=2, null=True, blank=True)
+    # スポット固有の通貨。空欄の場合は旅行の通貨をデフォルトとして使う。
+    currency = models.CharField(max_length=3, choices=Trip.CURRENCY_CHOICES, blank=True, default='')
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 

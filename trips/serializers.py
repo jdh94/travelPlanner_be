@@ -69,7 +69,7 @@ class SpotSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'trip', 'name', 'place_id', 'category', 'address',
             'latitude', 'longitude', 'visit_time', 'duration_min',
-            'memo', 'order_index', 'estimated_cost', 'comments',
+            'memo', 'order_index', 'estimated_cost', 'currency', 'comments',
             'created_at', 'updated_at',
         ]
         # trip は views.py の perform_create() で hash_url から取得してセットする。
@@ -85,7 +85,7 @@ class SpotListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'place_id', 'category', 'address',
             'latitude', 'longitude', 'visit_time', 'duration_min',
-            'memo', 'order_index', 'estimated_cost',
+            'memo', 'order_index', 'estimated_cost', 'currency',
         ]
         read_only_fields = ['id']
 
