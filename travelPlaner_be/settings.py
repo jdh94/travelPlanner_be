@@ -139,6 +139,9 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = [
     'http://localhost:5173',
     'http://127.0.0.1:5173',
+    'https://trip-to-mo.com',
+    'http://trip-to-mo.com',
+    'https://www.trip-to-mo.com',
 ]
 CORS_ALLOW_CREDENTIALS = True
 # CORS_ALLOW_HEADERS: プリフライト（OPTIONS リクエスト）で許可するヘッダー一覧。

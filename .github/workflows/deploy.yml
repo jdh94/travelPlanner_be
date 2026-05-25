@@ -1,0 +1,12 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    runs-on: self-hosted
+    steps:
+      - name: Deploy
+        run: /home/ringdingdonghu/projects/travelPlanner_be/deploy.sh
