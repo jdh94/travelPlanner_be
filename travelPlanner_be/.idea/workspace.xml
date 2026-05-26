@@ -34,7 +34,7 @@
   </component>
   <component name="CopilotPersistence">
     <persistenceIdMap>
-      <entry key="_/Users/jodonghu/workspace/travelPlaner/travelPlaner_be/travelPlaner_be" value="3E9wuri1OwNxyOZK0JF4mJjctPP" />
+      <entry key="_/Users/jodonghu/workspace/travelPlanner/travelPlanner_be/travelPlanner_be" value="3E9wuri1OwNxyOZK0JF4mJjctPP" />
     </persistenceIdMap>
   </component>
   <component name="Git.Settings">
@@ -48,7 +48,7 @@
 }]]></component>
   <component name="GithubPullRequestsUISettings"><![CDATA[{
   "selectedUrlAndAccountId": {
-    "url": "https://github.com/jdh94/travelPlaner_be.git",
+    "url": "https://github.com/jdh94/travelPlanner_be.git",
     "accountId": "b91cc9f9-a43d-4f1a-83e1-4a601b8d8a98"
   }
 }]]></component>
@@ -71,7 +71,7 @@
     "com.intellij.ml.llm.matterhorn.ej.ui.settings.DefaultModelSelectionForGA.v1": "true",
     "git-widget-placeholder": "main",
     "junie.onboarding.icon.badge.shown": "true",
-    "last_opened_file_path": "/Users/jodonghu/workspace/travelPlaner/travelPlaner_be/travelPlaner_be",
+    "last_opened_file_path": "/Users/jodonghu/workspace/travelPlanner/travelPlanner_be/travelPlanner_be",
     "to.speed.mode.migration.done": "true",
     "vue.rearranger.settings.migration": "true"
   }

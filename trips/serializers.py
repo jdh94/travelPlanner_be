@@ -163,13 +163,14 @@ class ExpenseSerializer(serializers.ModelSerializer):
     spot_name = serializers.SerializerMethodField()
     # participant_ids: 参加者の TripMember.id リスト（読み書き両用）。
     participant_ids = serializers.SerializerMethodField()
+    participant_names = serializers.SerializerMethodField()
 
     class Meta:
         model = Expense
         fields = [
             'id', 'trip', 'spot', 'spot_name', 'payer', 'payer_name', 'name',
             'amount', 'currency', 'date', 'memo',
-            'participant_ids', 'created_at',
+            'participant_ids', 'participant_names', 'created_at',
         ]
         read_only_fields = ['id', 'trip', 'created_at']
 
@@ -184,6 +185,9 @@ class ExpenseSerializer(serializers.ModelSerializer):
 
     def get_participant_ids(self, obj):
         return list(obj.participants.values_list('id', flat=True))
+
+    def get_participant_names(self, obj):
+        return [m.user.username for m in obj.participants.select_related('user').all() if m.user]
 
     def create(self, validated_data):
         participant_ids = self.context.get('participant_ids', [])

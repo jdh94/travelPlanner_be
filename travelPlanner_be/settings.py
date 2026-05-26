@@ -55,7 +55,7 @@ MIDDLEWARE = [
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
 ]
 
-ROOT_URLCONF = 'travelPlaner_be.urls'
+ROOT_URLCONF = 'travelPlanner_be.urls'
 
 TEMPLATES = [
     {
@@ -72,7 +72,7 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = 'travelPlaner_be.wsgi.application'
+WSGI_APPLICATION = 'travelPlanner_be.wsgi.application'
 
 # データベース設定。PyMySQL を使って外部 MySQL サーバーに接続する。
 DATABASES = {
