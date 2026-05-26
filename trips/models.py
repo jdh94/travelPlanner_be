@@ -37,8 +37,7 @@ class Trip(models.Model):
     # DB上は 'public' 等の文字列で保存されるが、管理画面では '公開' と表示される。
     VISIBILITY_CHOICES = [
         ('public', '公開'),
-        ('friends', '友達のみ'),
-        ('private', '非公開'),
+        ('private', '非公開（PIN保護）'),
     ]
     CURRENCY_CHOICES = [
         ('JPY', '円'),
@@ -67,6 +66,9 @@ class Trip(models.Model):
         'User', on_delete=models.SET_NULL, null=True, blank=True, related_name='created_trips'
     )
     guest_token = models.CharField(max_length=64, blank=True)
+    # ソフトデリート: 物理削除せずフラグで論理削除する。
+    is_deleted = models.BooleanField(default=False)
+    deleted_at = models.DateTimeField(null=True, blank=True)
     created_at = models.DateTimeField(auto_now_add=True)
     # auto_now=True → レコードを save() するたびに自動で現在時刻に更新される。
     updated_at = models.DateTimeField(auto_now=True)

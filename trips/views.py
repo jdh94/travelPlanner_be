@@ -15,6 +15,7 @@ from rest_framework.views import APIView
 # RefreshToken: JWT（JSON Web Token）のリフレッシュトークンを生成するクラス。
 # for_user(user) でアクセストークンとリフレッシュトークンのペアを発行できる。
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.views import TokenObtainPairView as _TokenObtainPairView
 
 
 # Flask メールサービスの URL。settings.py の EMAIL_SERVICE_URL で変更可能。
@@ -53,6 +54,22 @@ from .serializers import (
 User = get_user_model()
 
 
+class JapaneseTokenObtainPairView(_TokenObtainPairView):
+    """simplejwt のデフォルト英語エラーを日本語に上書きする。"""
+    def post(self, request, *args, **kwargs):
+        try:
+            return super().post(request, *args, **kwargs)
+        except Exception as e:
+            from rest_framework.exceptions import AuthenticationFailed
+            from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
+            if isinstance(e, (AuthenticationFailed, InvalidToken, TokenError)):
+                return Response(
+                    {'detail': 'メールアドレスまたはパスワードが正しくありません。'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            raise
+
+
 # --- Auth ---
 
 # --- メール認証 ---
@@ -69,6 +86,9 @@ class SendVerificationView(APIView):
         email = request.data.get('email', '').strip()
         if not email:
             return Response({'detail': 'メールアドレスを入力してください。'}, status=status.HTTP_400_BAD_REQUEST)
+        # 既存アカウントの確認（アクティブなユーザーのみ）
+        if User.objects.filter(email=email, is_active=True).exists():
+            return Response({'detail': 'このメールアドレスはすでに使用されています。'}, status=status.HTTP_400_BAD_REQUEST)
         try:
             # Flask サービスに POST して認証コードメールを送ってもらう。
             resp = http_client.post(
@@ -182,11 +202,11 @@ class TripListCreateView(generics.ListCreateAPIView):
     def get_queryset(self):
         user = self.request.user
         if user.is_authenticated:
-            # 自分が作った旅行 OR 自分がメンバーの旅行 を重複なしで返す。
+            # 削除済み（is_deleted=True）は一覧から除外する。
             return Trip.objects.filter(
                 Q(creator=user) | Q(members__user=user)
-            ).distinct()
-        return Trip.objects.filter(visibility='public')
+            ).filter(is_deleted=False).distinct()
+        return Trip.objects.filter(visibility='public', is_deleted=False)
 
     def get_serializer_context(self):
         # シリアライザに request を渡す。TripCreateSerializer の create() 内で使う。
@@ -217,27 +237,34 @@ class TripDetailView(generics.RetrieveUpdateDestroyAPIView):
 
     # get_object(): 単体オブジェクトを返す前にPINチェックを挿入する。
     def get_object(self):
-        # super().get_object() → 親クラスが lookup_field で Trip を取得する。
         trip = super().get_object()
+        # 削除済みの旅行は特別なレスポンスで返す（404ではなく専用フラグ）
+        if trip.is_deleted:
+            from rest_framework.exceptions import NotFound
+            raise NotFound({'deleted': True, 'message': 'この旅行は削除されました。'})
         if trip.pin_enabled:
-            # クライアントが送ってきたカスタムヘッダー X-Pin-Token を取得する。
             token = self.request.headers.get('X-Pin-Token', '')
             expected = _generate_pin_token(trip.hash_url, self.request.user.id)
-            # compare_digest(): タイミング攻撃（timing attack）を防ぐ定数時間比較。
-            # == 演算子は一致しない文字を見つけた時点で処理を止めるため、攻撃に弱い。
             if not hmac.compare_digest(token, expected):
                 from rest_framework.exceptions import PermissionDenied
-                # pin_required: True をレスポンスに含めることで、
-                # フロントエンドがPINページへリダイレクトするかどうかを判断できる。
                 raise PermissionDenied({'pin_required': True, 'hash_url': trip.hash_url})
+        # PIN認証通過 or PIN不要 → ログイン済みユーザーを自動でメンバー登録する
+        if self.request.user.is_authenticated:
+            TripMember.objects.get_or_create(
+                trip=trip, user=self.request.user,
+                defaults={'role': 'member'}
+            )
         return trip
 
     def destroy(self, request, *args, **kwargs):
-        trip = self.get_object()
-        # 作成者だけが削除できる。メンバーは削除できない。
+        trip = super().get_object()  # get_object()ではなく直接取得（削除済みでも操作できるように）
         if trip.creator != request.user:
             return Response({'detail': '削除権限がありません。'}, status=status.HTTP_403_FORBIDDEN)
-        trip.delete()
+        # ソフトデリート: 物理削除せずフラグを立てる
+        from django.utils import timezone
+        trip.is_deleted = True
+        trip.deleted_at = timezone.now()
+        trip.save()
         return Response(status=status.HTTP_204_NO_CONTENT)
 
 
@@ -501,6 +528,107 @@ class ExpenseDetailView(generics.RetrieveUpdateDestroyAPIView):
         serializer.is_valid(raise_exception=True)
         serializer.save()
         return Response(serializer.data)
+
+
+# --- Account ---
+
+class AccountDeactivateView(APIView):
+    """会員脱退: アカウントを無効化（is_active=False）してデータは保持する。"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        user.is_active = False
+        user.save()
+        return Response({'detail': '退会しました。またのご利用をお待ちしています。'})
+
+
+class ChangeUsernameView(APIView):
+    """ニックネーム変更: ログイン中のユーザーのユーザー名を変更する。"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        new_username = request.data.get('username', '').strip()
+        if not new_username:
+            return Response({'detail': 'ユーザー名を入力してください。'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new_username) > 30:
+            return Response({'detail': 'ユーザー名は30文字以内で入力してください。'}, status=status.HTTP_400_BAD_REQUEST)
+        if User.objects.filter(username=new_username).exclude(pk=request.user.pk).exists():
+            return Response({'detail': 'このユーザー名はすでに使用されています。'}, status=status.HTTP_400_BAD_REQUEST)
+        request.user.username = new_username
+        request.user.save()
+        return Response({'detail': 'ユーザー名を変更しました。', 'username': new_username})
+
+
+class ChangePasswordView(APIView):
+    """ログイン中のパスワード変更: 現在のパスワードを確認してから新しいパスワードに変更する。"""
+    permission_classes = [permissions.IsAuthenticated]
+
+    def post(self, request):
+        user = request.user
+        current = request.data.get('current_password', '')
+        new_pw = request.data.get('new_password', '')
+
+        if not user.check_password(current):
+            return Response({'detail': '現在のパスワードが正しくありません。'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new_pw) < 8:
+            return Response({'detail': 'パスワードは8文字以上で設定してください。'}, status=status.HTTP_400_BAD_REQUEST)
+
+        user.set_password(new_pw)
+        user.save()
+        return Response({'detail': 'パスワードを変更しました。再度ログインしてください。'})
+
+
+class SendPasswordResetView(APIView):
+    """パスワードリセット STEP1: 認証コードをメールで送信する（未ログイン用）。"""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        if not email:
+            return Response({'detail': 'メールアドレスを入力してください。'}, status=status.HTTP_400_BAD_REQUEST)
+        # ユーザーが存在するか確認（存在しなくても同じレスポンスを返してユーザー列挙を防ぐ）
+        if not User.objects.filter(email=email, is_active=True).exists():
+            return Response({'detail': '認証コードを送りました。メールをご確認ください。'})
+        try:
+            resp = http_client.post(
+                f'{EMAIL_SERVICE_URL}/sendMail/join',
+                json={'email': email},
+                timeout=10,
+            )
+            if resp.text.strip() == 'success':
+                return Response({'detail': '認証コードを送りました。メールをご確認ください。'})
+            return Response({'detail': 'メール送信に失敗しました。'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+        except Exception:
+            return Response({'detail': 'メールサービスに接続できません。'}, status=status.HTTP_503_SERVICE_UNAVAILABLE)
+
+
+class ResetPasswordView(APIView):
+    """パスワードリセット STEP2: 認証トークン確認後、新しいパスワードに変更する（未ログイン用）。"""
+    permission_classes = [permissions.AllowAny]
+
+    def post(self, request):
+        email = request.data.get('email', '').strip()
+        verification_token = request.data.get('verification_token', '').strip()
+        new_password = request.data.get('new_password', '').strip()
+
+        if not all([email, verification_token, new_password]):
+            return Response({'detail': 'パラメータが不足しています。'}, status=status.HTTP_400_BAD_REQUEST)
+        if len(new_password) < 8:
+            return Response({'detail': 'パスワードは8文字以上で設定してください。'}, status=status.HTTP_400_BAD_REQUEST)
+
+        expected = _generate_email_verification_token(email)
+        if not hmac.compare_digest(verification_token, expected):
+            return Response({'detail': '認証コードが無効です。もう一度やり直してください。'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            user = User.objects.get(email=email, is_active=True)
+        except User.DoesNotExist:
+            return Response({'detail': 'ユーザーが見つかりません。'}, status=status.HTTP_404_NOT_FOUND)
+
+        user.set_password(new_password)
+        user.save()
+        return Response({'detail': 'パスワードを再設定しました。新しいパスワードでログインしてください。'})
 
 
 class SettlementView(APIView):

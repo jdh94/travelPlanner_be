@@ -5,7 +5,7 @@ from django.urls import path
 # simplejwt が提供するビュー:
 # TokenObtainPairView → POST /auth/login/ でメール+パスワードを受け取り JWT を発行する。
 # TokenRefreshView → POST /auth/token/refresh/ でリフレッシュトークンを使いアクセストークンを再発行する。
-from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
+from rest_framework_simplejwt.views import TokenRefreshView
 from . import views
 
 urlpatterns = [
@@ -17,9 +17,14 @@ urlpatterns = [
     path('auth/verify-email/', views.VerifyEmailCodeView.as_view(), name='verify-email'),
     # 会員登録 STEP3: verification_token 付きで登録する
     path('auth/register/', views.RegisterView.as_view(), name='register'),
-    path('auth/login/', TokenObtainPairView.as_view(), name='login'),
+    path('auth/login/', views.JapaneseTokenObtainPairView.as_view(), name='login'),
     path('auth/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('auth/me/', views.MeView.as_view(), name='me'),
+    path('auth/deactivate/', views.AccountDeactivateView.as_view(), name='deactivate'),
+    path('auth/change-username/', views.ChangeUsernameView.as_view(), name='change-username'),
+    path('auth/change-password/', views.ChangePasswordView.as_view(), name='change-password'),
+    path('auth/send-reset/', views.SendPasswordResetView.as_view(), name='send-reset'),
+    path('auth/reset-password/', views.ResetPasswordView.as_view(), name='reset-password'),
 
     # --- 旅行 ---
     # <str:hash_url>: URL の該当部分を文字列として views.py の kwargs に渡す。
