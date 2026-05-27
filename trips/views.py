@@ -631,14 +631,34 @@ class ResetPasswordView(APIView):
         return Response({'detail': 'パスワードを再設定しました。新しいパスワードでログインしてください。'})
 
 
+# --- 為替レート（概算）---
+# {元通貨: {変換先通貨: レート}}
+# 定期的な更新が望ましいが、旅行精算の概算には十分。
+_EXCHANGE_RATES: dict[str, dict[str, float]] = {
+    'JPY': {'JPY': 1.0,    'KRW': 9.5,    'USD': 0.0067},
+    'KRW': {'JPY': 0.105,  'KRW': 1.0,    'USD': 0.00070},
+    'USD': {'JPY': 149.0,  'KRW': 1430.0, 'USD': 1.0},
+}
+
+def _convert_currency(amount: Decimal, from_cur: str, to_cur: str) -> Decimal:
+    """amount を from_cur から to_cur に概算レートで変換する。"""
+    if from_cur == to_cur:
+        return amount
+    rate = _EXCHANGE_RATES.get(from_cur, {}).get(to_cur)
+    if rate is None:
+        return amount  # 未対応通貨はそのまま
+    return amount * Decimal(str(rate))
+
+
 class SettlementView(APIView):
     """
     GET /trips/<hash_url>/settlement/
 
     各メンバーの収支を計算して「誰が誰にいくら払うか」のリストを返す。
+    異なる通貨の費用は旅行のデフォルト通貨に変換してから計算する。
 
     アルゴリズム:
-    1. 各費用について、参加者が支払者に「割り勘額（amount / 参加人数）」を負う。
+    1. 各費用を旅行通貨に変換した上で、参加者が支払者に「割り勘額」を負う。
     2. 全費用を集計して、メンバーごとの純収支（balance）を計算する。
        balance > 0: 受け取るべき金額がある（多く払った人）
        balance < 0: 支払うべき金額がある（少なく払った人）
@@ -657,6 +677,7 @@ class SettlementView(APIView):
 
         # --- STEP 1: メンバーごとの純収支を計算する ---
         # balance[member_id] = 受け取るべき金額（正）または払うべき金額（負）
+        # ※ すべて旅行のデフォルト通貨（trip.currency）に変換して集計する
         balance: dict[int, Decimal] = {}
         member_names: dict[int, str] = {}
 
@@ -667,17 +688,19 @@ class SettlementView(APIView):
             if not participants:
                 continue
 
-            # 割り勘額（小数点以下2桁で計算）。
-            each_share = expense.amount / Decimal(len(participants))
+            # 費用を旅行の通貨に変換する（同じ通貨なら変換なし）。
+            converted_amount = _convert_currency(expense.amount, expense.currency, trip.currency)
+            # 割り勘額（変換後の金額を参加人数で割る）。
+            each_share = converted_amount / Decimal(len(participants))
 
             payer_id = expense.payer.id
             payer_name = expense.payer.user.username if expense.payer.user else '不明'
             member_names[payer_id] = payer_name
 
-            # 支払者の収支に「立替えた合計額」を加算する。
-            balance[payer_id] = balance.get(payer_id, Decimal('0')) + expense.amount
+            # 支払者の収支に「立替えた合計額（変換後）」を加算する。
+            balance[payer_id] = balance.get(payer_id, Decimal('0')) + converted_amount
 
-            # 参加者全員の収支から「割り勘額」を引く（負債）。
+            # 参加者全員の収支から「割り勘額（変換後）」を引く（負債）。
             for participant in participants:
                 pid = participant.id
                 pname = participant.user.username if participant.user else '不明'
