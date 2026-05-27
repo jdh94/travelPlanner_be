@@ -67,8 +67,8 @@ class SpotSerializer(serializers.ModelSerializer):
     class Meta:
         model = Spot
         fields = [
-            'id', 'trip', 'name', 'place_id', 'category', 'address',
-            'latitude', 'longitude', 'visit_time', 'duration_min',
+            'id', 'trip', 'name', 'place_id', 'address',
+            'latitude', 'longitude', 'visit_date', 'visit_time', 'duration_min',
             'memo', 'order_index', 'estimated_cost', 'currency', 'comments',
             'created_at', 'updated_at',
         ]
@@ -83,8 +83,8 @@ class SpotListSerializer(serializers.ModelSerializer):
     class Meta:
         model = Spot
         fields = [
-            'id', 'name', 'place_id', 'category', 'address',
-            'latitude', 'longitude', 'visit_time', 'duration_min',
+            'id', 'name', 'place_id', 'address',
+            'latitude', 'longitude', 'visit_date', 'visit_time', 'duration_min',
             'memo', 'order_index', 'estimated_cost', 'currency',
         ]
         read_only_fields = ['id']
@@ -133,19 +133,21 @@ class TripSerializer(serializers.ModelSerializer):
 # 旅行作成専用のシリアライザ。
 # TripSerializer はネストデータを含む複雑な構造なので、作成時は別クラスを使う。
 class TripCreateSerializer(serializers.ModelSerializer):
+    pin = serializers.CharField(max_length=4, min_length=4, write_only=True, required=False, allow_blank=True)
+
     class Meta:
         model = Trip
-        fields = ['title', 'description', 'start_date', 'end_date', 'currency', 'visibility']
+        fields = ['title', 'description', 'start_date', 'end_date', 'currency', 'visibility', 'pin_enabled', 'pin']
 
     def create(self, validated_data):
-        # self.context['request'] → views.py から渡されたリクエストオブジェクト。
-        # シリアライザ単体ではリクエストにアクセスできないので context 経由で受け取る。
+        pin = validated_data.pop('pin', None)
         request = self.context.get('request')
         trip = Trip(**validated_data)
         if request and request.user.is_authenticated:
             trip.creator = request.user
+        if pin:
+            trip.pin = pin
         trip.save()
-        # 作成者を自動的に 'organizer' としてメンバーに追加する。
         if request and request.user.is_authenticated:
             TripMember.objects.create(trip=trip, user=request.user, role='organizer')
         return trip

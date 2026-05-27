@@ -127,6 +127,7 @@ class Spot(models.Model):
     # null=True, blank=True → DBにNULLが入ってもOK、かつバリデーションでも空でOK。
     latitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
     longitude = models.DecimalField(max_digits=10, decimal_places=7, null=True, blank=True)
+    visit_date = models.DateField(null=True, blank=True)
     visit_time = models.TimeField(null=True, blank=True)
     duration_min = models.IntegerField(null=True, blank=True)
     memo = models.TextField(blank=True, max_length=500)
